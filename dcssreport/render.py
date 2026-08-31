@@ -201,7 +201,7 @@ def svg_heatmap(rows: list[str], cols: list[str], data: dict[tuple[str, str], in
     W, H = pad_l + cw + 14, pad_t + chh + 22
     parts = [
         f'<svg class="chart" viewBox="0 0 {W} {H}" role="img">',
-        f'<text x="{pad_l}" y="{pad_t - 12}" class="hbar-label">species →</text>',
+        f'<text x="4" y="{pad_t - 10}" class="hbar-label">species →</text>',
         f'<text x="{pad_l}" y="{pad_t + chh + 16}" class="hbar-label">↑ background</text>',
     ]
     for ci, col in enumerate(cols):
@@ -535,8 +535,8 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
     nav = "".join(
         f'<a href="#{a}">{esc(t)}</a>'
         for a, t in [("timeline", "Timeline"), ("deaths", "Deaths"),
-                     ("postmortem", "Post-mortem"), ("archetypes", "Archetypes"),
-                     ("runs", "Every run"), ("milestones", "Milestones")]
+                     ("archetypes", "Archetypes"), ("milestones", "Milestones"),
+                     ("postmortem", "Post-mortem"), ("runs", "Every run")]
     )
     source = (f'<a href="{esc(source_url)}">morgue files</a>' if source_url
               else "morgue files")
@@ -656,10 +656,10 @@ footer a {{ color:var(--muted); }}
 <main>
 {timeline}
 {deaths}
-{postmortem}
 {archetypes}
-{table}
 {milestones}
+{postmortem}
+{table}
 </main>
 <footer>
   Generated from {source} · parsed {len(rs.games)} of {rs.total_games} morgue files
