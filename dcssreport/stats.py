@@ -66,6 +66,12 @@ class ReportStats:
     cumulative: list[tuple[datetime, int, int]] = field(default_factory=list)  # (date, turns, score)
     version_counts: Counter = field(default_factory=Counter)
     unparsed: list[str] = field(default_factory=list)
+    mistake_counts: Counter = field(default_factory=Counter)
+    mistakes_total: int = 0
+    games_with_mistakes: int = 0
+    games_high: int = 0
+    offenders: list = field(default_factory=list)  # games with most mistakes
+    mistake_meta: dict[str, tuple[str, str]] = field(default_factory=dict)  # rule -> (label, severity)
 
 
 def build(games: list[Game]) -> ReportStats:
@@ -140,6 +146,17 @@ def build(games: list[Game]) -> ReportStats:
             ys.scores.append(g.score)
         if g.duration:
             ys.durations.append(g.duration)
+
+    for g in rs.games:
+        for mk in g.mistakes:
+            rs.mistake_counts[mk.rule] += 1
+            rs.mistake_meta.setdefault(mk.rule, (mk.label, mk.severity))
+        if g.mistakes:
+            rs.games_with_mistakes += 1
+            if any(mk.severity == "high" for mk in g.mistakes):
+                rs.games_high += 1
+        rs.mistakes_total += len(g.mistakes)
+    rs.offenders = sorted(rs.games, key=lambda g: len(g.mistakes), reverse=True)[:5]
 
     if rs.total_games:
         rs.win_rate = rs.wins / rs.total_games * 100.0

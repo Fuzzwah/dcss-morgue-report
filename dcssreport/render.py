@@ -384,9 +384,56 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
         _fin_section(),
     ])
 
+    # ---- Post-mortem ----------------------------------------------------
+    sev_color = {"high": DEATH, "medium": ACCENT, "low": MUTED}
+    rec = [(rs.mistake_meta.get(r, (r, "low"))[0], c,
+            rs.mistake_meta.get(r, (r, "low"))[1])
+           for r, c in rs.mistake_counts.most_common(12)]
+    rec_color = DEATH if rec and all(s == "high" for _, _, s in rec) else ACCENT
+    offenders_html = []
+    for og in rs.offenders:
+        lis = "".join(
+            f'<li class="sev-{mk.severity}"><b>{esc(mk.label)}</b> — '
+            f'{esc(mk.evidence)}</li>' for mk in og.mistakes
+        )
+        offenders_html.append(
+            f'<div class="offender"><div class="offender-head">'
+            f'{fmt_date(og.game_date)} · {esc(og.title)} · XL {og.xl} · '
+            f'<span class="sev-high">{esc(og.killer or og.cause_short or "—")}</span>'
+            f'</div><ul class="mistake-list">{lis}</ul></div>'
+        )
+    offenders_block = ('<div class="card"><h3>Worst offenders</h3>'
+                       + "".join(offenders_html) + "</div>")
+    pm_chips = "".join([
+        _kpi("Mistakes found", fmt_int(rs.mistakes_total), "across all runs", ACCENT),
+        _kpi("Games with mistakes", fmt_int(rs.games_with_mistakes),
+             pct(rs.games_with_mistakes, rs.total_games), TEXT),
+        _kpi("Avg mistakes / game",
+             f"{rs.mistakes_total / rs.total_games:.1f}" if rs.total_games else "—",
+             "per death", TEXT),
+        _kpi("Games with critical mistakes", fmt_int(rs.games_high),
+             "≥1 high-severity", DEATH),
+    ])
+    postmortem = "".join([
+        _section("Post-mortem", "postmortem",
+                 "What the morgues say went wrong — evidence from inventory "
+                 "at death, damage math, resists and the turn notes."),
+        '<div class="kpis">' + pm_chips + "</div>",
+        '<div class="grid2">',
+        '<div class="card"><h3>Top recurring mistakes</h3>'
+        + svg_hbars([(label, cnt, f"{label}: {cnt} game(s)") for label, cnt, _ in rec],
+                    color=rec_color, label_w=235)
+        + "</div>",
+        offenders_block,
+        "</div>",
+        _fin_section(),
+    ])
+
     # ---- Every run ------------------------------------------------------
     rows_html = []
     for i, game in enumerate(reversed(g), start=1):
+        mis = game.mistakes
+        mis_title = " · ".join(f"{mk.label}: {mk.evidence}" for mk in mis)
         rows_html.append(
             "<tr>"
             f'<td data-sort="{i}" class="num">{i}</td>'
@@ -404,7 +451,10 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
             f'<td class="cause" data-sort="{esc(game.killer or game.cause_short or "")}">{esc(game.killer or game.cause_short or "—")}</td>'
             f'<td class="num">{game.damage if game.damage is not None else "—"}</td>'
             f'<td class="num" data-sort="{len(game.uniques_killed)}">{len(game.uniques_killed) or "—"}</td>'
-            "</tr>"
+            + (f'<td class="num" data-sort="{len(mis)}" title="{esc(mis_title)}" '
+               f'style="color:{DEATH if any(m.severity == "high" for m in mis) else ACCENT}">'
+               f'{"⚠ " + str(len(mis)) if mis else "—"}</td>')
+            + "</tr>"
         )
     table = "".join([
         _section("Every run", "runs", f"All {rs.total_games} recorded games, newest first. Click a column to sort, type to filter."),
@@ -417,6 +467,7 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
         "<th data-k=\"text\">God</th><th data-k=\"num\">Runes</th><th data-k=\"num\">Turns</th>"
         "<th data-k=\"num\">Time</th><th data-k=\"num\">Score</th><th data-k=\"text\">Reached</th>"
         "<th data-k=\"text\">Death</th><th data-k=\"num\">Dmg</th><th data-k=\"num\">Uniques</th>"
+        '<th data-k="num" title="Mistakes found">⚠</th>'
         "</tr></thead><tbody>",
         "".join(rows_html),
         "</tbody></table></div></div>",
@@ -484,8 +535,8 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
     nav = "".join(
         f'<a href="#{a}">{esc(t)}</a>'
         for a, t in [("timeline", "Timeline"), ("deaths", "Deaths"),
-                     ("archetypes", "Archetypes"), ("runs", "Every run"),
-                     ("milestones", "Milestones")]
+                     ("postmortem", "Post-mortem"), ("archetypes", "Archetypes"),
+                     ("runs", "Every run"), ("milestones", "Milestones")]
     )
     source = (f'<a href="{esc(source_url)}">morgue files</a>' if source_url
               else "morgue files")
@@ -575,6 +626,16 @@ tbody td {{ padding:7px 10px; border-bottom:1px solid #1a2030; white-space:nowra
 tbody tr:hover {{ background:var(--panel2); }}
 td.cause {{ color:#e2a6ad; }}
 tbody tr.row-hidden {{ display:none; }}
+.offender {{ border:1px solid var(--border); border-radius:10px; padding:12px 14px;
+  margin-bottom:10px; }}
+.offender-head {{ font-size:13px; color:var(--muted); margin-bottom:6px; }}
+.offender-head b {{ color:var(--text); }}
+.mistake-list {{ list-style:none; margin:0; padding:0; }}
+.mistake-list li {{ font-size:13px; padding:3px 0; line-height:1.45; }}
+.mistake-list li b {{ font-weight:600; }}
+.sev-high b {{ color:var(--death); }}
+.sev-medium b {{ color:var(--accent); }}
+.sev-low b {{ color:var(--text); }}
 
 footer {{ border-top:1px solid var(--border); color:var(--muted); font-size:13px;
   padding:28px 32px 48px; text-align:center; }}
@@ -595,6 +656,7 @@ footer a {{ color:var(--muted); }}
 <main>
 {timeline}
 {deaths}
+{postmortem}
 {archetypes}
 {table}
 {milestones}

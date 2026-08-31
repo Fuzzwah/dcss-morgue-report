@@ -16,6 +16,7 @@ from pathlib import Path
 
 from . import __version__
 from .fetch import download_morgues
+from .mistakes import run_all as analyze_mistakes
 from .parse import parse_dir
 from .render import render_html
 from .stats import build
@@ -43,6 +44,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     if not games:
         print(f"no morgue files found in {raw}", file=sys.stderr)
         return 1
+    analyze_mistakes(games)
     rs = build(games)
 
     out_dir = Path(args.out)

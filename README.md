@@ -14,9 +14,14 @@ internet needed to view the report (charts are inline SVG).
 - **Career overview** — games, wins, best score, deepest run, turns, playtime, runes, gold
 - **Timeline** — games per year, best score per year, average max XL per year, cumulative score
 - **The Reaper's ledger** — top killers, deaths by branch, deaths by XL, deaths by hour
+- **Post-mortem** — what went wrong, per run and across the career: unused escape/healing
+  consumables, unidentified items, chip-death vs one-shot damage math, resist gaps,
+  empty ring/amulet slots, unenchanted gear, god abilities never invoked, god wrath,
+  banishes, deaths right after entering a branch. Every finding carries the evidence
+  and one line of advice, tagged high/medium/low severity.
 - **Archetypes** — species, backgrounds, species × background heatmap, gods worshipped
 - **Every run** — sortable/filterable table of all 95+ games: character, XL, god, runes,
-  turns, time, score, depth reached, cause of death, uniques slain
+  turns, time, score, depth reached, cause of death, uniques slain, mistake count
 - **Milestones** — firsts, records, longest hiatus
 - **JSON export** — the full parsed dataset for your own analysis
 
@@ -80,6 +85,7 @@ dcssreport/
   __main__.py     CLI
   fetch.py        morgue downloader
   parse.py        morgue → Game records
+  mistakes.py     per-run mistake analysis (post-mortem rules)
   stats.py        aggregation
   render.py       HTML + SVG report
 data/

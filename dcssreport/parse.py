@@ -159,6 +159,19 @@ class Game:
     version: str = ""
     seed: str | None = None
     uniques_killed: list[str] = field(default_factory=list)
+    inventory: dict[str, list[dict]] = field(default_factory=dict)  # category -> items
+    empty_slots: list[str] = field(default_factory=list)
+    action: dict[str, int] = field(default_factory=dict)            # "Invoke: Berserk" -> total
+    entered_turns: dict[str, int] = field(default_factory=dict)     # branch -> first turn entered
+    mistakes: list = field(default_factory=list)
+
+    @property
+    def max_hp(self) -> int | None:
+        """Max HP at death: '102' from '-10/102' or '180' from '-4/159 (180)'."""
+        m = re.search(r"/(\d+)(?: \((\d+)\))?$", self.hp_at_end)
+        if not m:
+            return None
+        return int(m.group(2) or m.group(1))
 
     @property
     def depth(self) -> float:
@@ -230,6 +243,44 @@ _VERSION_RE = re.compile(r"^Dungeon Crawl Stone Soup version (\S+)")
 _SEED_RE = re.compile(r"^Game seed: (\d+)$")
 _NOTE_RE = re.compile(r"^(\d+) \|\s*(\S+)\s*\| (.*)$")
 _KILL_NOTE_RE = re.compile(r"^Killed (?!by\b)([A-Z]\w.*)$")
+_ENTERED_RE = re.compile(r"^Entered (?:Level (\d+) of )?(?:the )?(.+)$")
+_INV_CAT_RE = re.compile(
+    r"^(Hand Weapons|Weapons|Missiles|Armour|Jewellery|Wands|Scrolls|Potions"
+    r"|Comestibles|Miscellaneous|Magical Devices|Books|Food)$"
+)
+_INV_ITEM_RE = re.compile(r"^[a-z] - (.+)$")
+_EMPTY_SLOT_RE = re.compile(r"\((no (?:ring|amulet|helmet|gloves|boots|shield|barding))\)")
+_ACTION_RE = re.compile(r"^(\s*)(\w+): ([^|]*?)\s*\|.*\|\| *(\d+)\s*$")
+_ENCHANT_RE = re.compile(r"^([+-]\d+) ")
+_EQUIP_PARENS = {"worn", "weapon", "quivered", "left hand", "right hand", "around neck"}
+
+
+def _parse_inv_item(rem: str) -> dict:
+    """'2 scrolls of fog {unknown}' / 'a +2 battleaxe (weapon)' -> item dict."""
+    item: dict = {"name": "", "count": 1, "unknown": False,
+                  "equipped": False, "enchant": None}
+    rem = rem.strip()
+    m = re.match(r"^(\d+) (.+)$", rem)
+    if m:
+        item["count"] = int(m.group(1))
+        rem = m.group(2)
+    brace = ""
+    if "{" in rem:
+        rem, _, brace = rem.partition("{")
+        rem = rem.rstrip()
+        brace = brace.rstrip("}")
+    paren = ""
+    if "(" in rem:
+        rem, _, paren = rem.partition("(")
+        rem = rem.rstrip()
+        paren = paren.rstrip(")")
+    item["name"] = rem
+    item["unknown"] = "unknown" in brace
+    item["equipped"] = paren.strip() in _EQUIP_PARENS
+    m = _ENCHANT_RE.match(rem)
+    if m:
+        item["enchant"] = int(m.group(1))
+    return item
 _XL_RE = re.compile(r"\bXL:\s*(\d+)")
 _GOD_STAT_RE = re.compile(r"\bGod:\s*(\w[\w ]*?)\s*(?:\[[.\*]*\]\s*)?$")
 _HP_RE = re.compile(r"^(?:Health|HP):\s*([-\d]+/\d+(?: \(\d+\))?)")
@@ -364,6 +415,7 @@ def parse_morgue(text: str, source: str) -> Game:
         if s.split(" ", 1)[0] in _STATS_KEYS:
             _parse_stats_line(ln, g)
             continue
+        g.empty_slots.extend(_EMPTY_SLOT_RE.findall(ln))
         if s.split(" ", 1)[0] in _RESIST_NAMES:
             m = _RESIST_RE.match(ln)
             if m:
@@ -371,8 +423,8 @@ def parse_morgue(text: str, source: str) -> Game:
             continue
         break
 
-    # --- Body sections ---------------------------------------------------
     section = ""
+    inv_section = ""
     in_skills = False
     in_notes = False
     for ln in lines:
@@ -386,6 +438,9 @@ def parse_morgue(text: str, source: str) -> Game:
             in_skills = False
             if s.startswith("Dungeon Overview"):
                 section = "overview"
+            elif s == "Inventory:":
+                section = "inventory"
+                inv_section = ""
             continue
         if s == "Notes":
             in_notes = True
@@ -401,6 +456,23 @@ def parse_morgue(text: str, source: str) -> Game:
             continue
         if s.startswith("Action"):
             section = "action"
+            continue
+
+        if section == "inventory":
+            if _INV_CAT_RE.match(s):
+                inv_section = s
+                continue
+            g.empty_slots.extend(_EMPTY_SLOT_RE.findall(s))
+            m = _INV_ITEM_RE.match(s)
+            if m and inv_section:
+                g.inventory.setdefault(inv_section, []).append(_parse_inv_item(m.group(1)))
+            continue
+
+        if section == "action":
+            m = _ACTION_RE.match(ln)
+            if m:
+                sub = m.group(3).strip()
+                g.action[f"{m.group(2)}: {sub}".strip()] = int(m.group(4))
             continue
 
         if in_skills and section != "skillchart":
@@ -430,6 +502,13 @@ def parse_morgue(text: str, source: str) -> Game:
                 km = _KILL_NOTE_RE.match(note.text)
                 if km:
                     g.uniques_killed.append(km.group(1).strip())
+                em = _ENTERED_RE.match(note.text)
+                if em:
+                    branch = normalize_branch(em.group(2))
+                    if branch:
+                        prev = g.entered_turns.get(branch)
+                        if prev is None or note.turn < prev:
+                            g.entered_turns[branch] = note.turn
                 continue
 
         m = _ALSO_VISITED_RE.match(s)
