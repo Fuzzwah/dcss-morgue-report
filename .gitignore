@@ -1,0 +1,13 @@
+# Raw downloaded morgue files — re-fetch with `python -m dcssreport fetch <player>`
+data/raw/
+
+# Regenerable outputs (example HTML report is committed)
+data/reports/*.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
