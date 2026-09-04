@@ -1,6 +1,9 @@
 # Raw downloaded morgue files — re-fetch with `python -m dcssreport fetch <player>`
 data/raw/
 
+# Downloaded monster/species tile art + layout cache
+data/tiles/
+
 # Regenerable outputs (example HTML report is committed)
 data/reports/*.json
 

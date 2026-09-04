@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import statistics
+from collections import Counter
 from datetime import datetime
 
 from .parse import Game
@@ -44,6 +45,7 @@ def fmt_dur_long(seconds: int | None) -> str:
         parts.append(f"{h}h")
     if m:
         parts.append(f"{m}m")
+    return " ".join(parts) or "<1m"
 
 
 def fmt_date(d: datetime | None) -> str:
@@ -68,6 +70,108 @@ def esc(s: str) -> str:
 
 def pct(part: float, whole: float) -> str:
     return f"{part / whole * 100:.1f}%" if whole else "—"
+
+
+_TITLE_SMALL = {"a", "an", "and", "at", "for", "in", "of", "on", "the", "to"}
+
+
+def title_case(s: str) -> str:
+    """'realm of zot' -> 'Realm of Zot'."""
+    words = s.split()
+    return " ".join(
+        w.capitalize() if i == 0 or w.lower() not in _TITLE_SMALL else w.lower()
+        for i, w in enumerate(words)
+    ) or s
+
+
+# --------------------------------------------------------------------------
+# Tile-art rows
+# --------------------------------------------------------------------------
+
+#: Shown where a killer has no tile art anywhere in the crawl repo (gods
+#: without altars, effects like "nerve-wracking pain", long-removed monsters).
+SKULL_SVG = (
+    '<svg viewBox="0 0 24 24" aria-hidden="true">'
+    '<path d="M12 3.2a7 7 0 0 0-7 7c0 2.7 1.5 5 3.7 6.3l.5 3.3a1 1 0 0 0 1 .8'
+    'h3.6a1 1 0 0 0 1-.8l.5-3.3A7.4 7.4 0 0 0 19 10.2a7 7 0 0 0-7-7z"'
+    ' fill="none" stroke="currentColor" stroke-width="1.7"/>'
+    '<rect x="9.1" y="8.4" width="2" height="2.6" rx="0.5" fill="currentColor"/>'
+    '<rect x="12.9" y="8.4" width="2" height="2.6" rx="0.5" fill="currentColor"/>'
+    '<path d="M9.6 15.6h4.8M11 13.6v2M13 13.6v2" stroke="currentColor"'
+    ' stroke-width="1.2" fill="none"/></svg>'
+)
+
+
+def _tile_img(name: str, images: dict[str, str], cls: str = "tile", *,
+              fallback: bool = False) -> str:
+    """Inline <img> for `name` when art is available, else '' (layout holds).
+
+    With `fallback`, artless names get the no-art glyph instead of nothing —
+    used only for death causes, where an empty tile reads as a bug.
+    """
+    uri = images.get(name)
+    if uri:
+        return f'<img class="{cls}" src="{uri}" alt="" loading="lazy">'
+    if fallback:
+        small = " tile-sm" if cls == "tile-sm" else ""
+        return (f'<span class="tile-unknown{small}" '
+                f'title="no tile art in the crawl repo">{SKULL_SVG}</span>')
+    return ""
+
+
+def _char_sprite(game, images: dict[str, str], *, sm: bool = False) -> str:
+    """Layered portrait: species body + the gear worn at death (approx).
+
+    Parts share one aligned 32×32 canvas; each present layer stacks.  Without
+    art the row keeps its space via the title-cell flex layout.
+    """
+    from . import tiles
+    rels = tiles.gear_rels(game)
+    uris = [images.get(game.species or "")] + \
+        [images.get("part:" + r) for r in rels]
+    imgs = "".join(f'<img src="{u}" alt="">' for u in uris if u)
+    if not imgs:
+        return ""
+    return f'<span class="{"charstack sm" if sm else "charstack"}">{imgs}</span>'
+
+
+def _tile_rows(items: list[tuple], images: dict[str, str], *, color: str,
+               limit: int = 12, fallback: bool = False,
+               label_w: int = 170) -> str:
+    """Name rows with optional tile art and an inline bar.
+
+    items: (label, value) or (label, value, tooltip).  Rows without art keep
+    their space so the column aligns.  This is the single row style for every
+    name/count list in the report, so all lists share one typography.
+    """
+    # items: (label, value) | (label, value, tooltip) | (label, value,
+    # tooltip, icon_key) — icon_key overrides the label for art lookup.
+    items = [it if len(it) > 3 else (it[0], it[1], it[2] if len(it) > 2 else None,
+                                     it[0]) for it in items[:limit]]
+    if not items:
+        return ""
+    vmax = max(v for _, v, *_ in items) or 1
+    lab = (f'<span class="tlab" style="flex-basis:{label_w}px;width:{label_w}px">'
+           if label_w != 170 else '<span class="tlab">')
+    parts = ['<div class="trows">']
+    for label, value, tip, icon in items:
+        tip = tip or f"{label}: {value:,}"
+        lead = _tile_img(icon, images, fallback=fallback)
+        if not lead:
+            # keep the icon column so labels align across every list card
+            lead = '<span class="tile-gap"></span>'
+        # sqrt scaling keeps small-but-real counts visible next to outliers
+        frac = (value / vmax) ** 0.5 * 100
+        parts.append(
+            '<div class="trow" title="' + esc(tip) + '">'
+            + lead
+            + lab + esc(label) + "</span>"
+            + f'<div class="track"><div class="fill" style="width:{frac:.0f}%;'
+            + f'background:{color}"></div></div>'
+            + f'<span class="tval">{fmt_int(value)}</span></div>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
 
 
 # --------------------------------------------------------------------------
@@ -278,7 +382,18 @@ def _fin_section() -> str:
     return "</section>"
 
 
-def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
+def render_html(rs: ReportStats, player: str, *, source_url: str = "",
+                images: dict[str, str] | None = None,
+                unique_deaths: dict[str, int] | None = None) -> str:
+    """Render the report.
+
+    images:        display name -> data-URI of its tile art (monsters, uniques
+                   and species, as resolved by dcssreport.tiles).
+    unique_deaths: killer name -> death count for unique monsters that killed
+                   the player; shown as "Deaths vs uniques".
+    """
+    images = images or {}
+    unique_deaths = unique_deaths or {}
     g = rs.games
     span = ""
     if rs.first_date and rs.last_date:
@@ -329,31 +444,50 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
         _fin_section(),
     ])
 
-    # ---- Deaths ---------------------------------------------------------
+    # ---- Monster / branch / death cards --------------------------------
     killers = rs.killers.most_common(15)
     branches = rs.death_branches.most_common(12)
     xl_hist = sorted(rs.xl_histogram.items())
     hours = [rs.hour_histogram.get(h, 0) for h in range(24)]
 
-    deaths = "".join([
-        _section("The Reaper's ledger", "deaths",
-                 "What ended the runs, and where. Every death since " + (str(rs.first_date.year) if rs.first_date else "the beginning") + "."),
-        '<div class="grid2">',
-        '<div class="card"><h3>Top killers</h3>'
-        + svg_hbars([(k, v, f"{k}: {v} deaths") for k, v in killers], color=DEATH)
-        + "</div>",
-        '<div class="card"><h3>Death by branch</h3>'
-        + svg_hbars([(k, v, f"{k}: {v} deaths") for k, v in branches], color=PURPLE)
-        + "</div>",
-        '<div class="card"><h3>Deaths by XP level</h3>'
-        + svg_vbars([str(x) for x, _ in xl_hist], [v for _, v in xl_hist], color=BLUE)
-        + "</div>",
-        '<div class="card"><h3>Deaths by hour of day (UTC)</h3>'
-        + svg_vbars([str(h) for h in range(24)], hours, color=MUTED, value_labels=False)
-        + "</div>",
-        "</div>",
-        _fin_section(),
-    ])
+    killer_rows = [(k, v, f"{k}: {v} deaths") for k, v in killers]
+    killer_card = ('<div class="card"><h3>Top killers</h3>'
+                   + (_tile_rows(killer_rows, images, color=DEATH, fallback=True)
+                      if any(images.get(k) for k, _ in killers)
+                      else svg_hbars(killer_rows, color=DEATH))
+                   + "</div>")
+
+    branch_rows = [(title_case(k), v, f"{k}: {v} deaths", k) for k, v in branches]
+    branch_card = ('<div class="card"><h3>Branch deaths</h3>'
+                   + (_tile_rows(branch_rows, images, color=PURPLE)
+                      if any(images.get(k) for k, _ in branches)
+                      else svg_hbars(branch_rows, color=PURPLE))
+                   + "</div>")
+
+    # Branch visits: runs that entered each branch (death implies a visit).
+    branch_visits: Counter = Counter()
+    for gm in g:
+        seen = set(gm.branches_visited)
+        seen.update(gm.extra_branches)
+        seen.update(k for k in gm.entered_turns)
+        if gm.death_branch:
+            seen.add(gm.death_branch)
+        for b in seen:
+            if b:
+                branch_visits[b] += 1
+    visit_rows = [(title_case(k), v, f"{k}: entered in {v} run(s)", k) for k, v in
+                  branch_visits.most_common(12)]
+    visit_card = ('<div class="card"><h3>Branch visits</h3>'
+                  + (_tile_rows(visit_rows, images, color=BLUE)
+                     if any(images.get(k) for k, *_ in visit_rows)
+                     else svg_hbars(visit_rows, color=BLUE))
+                  + "</div>")
+
+    # ---- Deaths vs unique monsters --------------------------------------
+    ud_total = sum(unique_deaths.values())
+    ud = sorted(unique_deaths.items(), key=lambda kv: (-kv[1], kv[0]))
+    death_runs = max(rs.total_games - rs.wins, 1)
+    deadliest = ud[0] if ud else None
 
     # ---- Archetypes -----------------------------------------------------
     species = rs.species.most_common(10)
@@ -369,17 +503,27 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
         xs = rs.god_xl.get(name, [])
         god_rows.append((name, cnt, f"{name}: {cnt} game(s), avg XL {statistics.fmean(xs):.1f}"))
 
+    species_rows = [(s, c, f"{s}: {c} game(s)") for s, c in species]
+    species_card = ('<div class="card"><h3>Species played</h3>'
+                    + (_tile_rows(species_rows, images, color=BLUE)
+                       if any(images.get(s) for s, _ in species)
+                       else svg_hbars(species_rows, color=BLUE))
+                    + "</div>")
+
+    bgs_rows = [(b, c, f"{b}: {c} game(s)") for b, c in bgs]
+    bgs_card = ('<div class="card"><h3>Backgrounds</h3>'
+                + _tile_rows(bgs_rows, images, color=ACCENT) + "</div>")
+    gods_card = ('<div class="card"><h3>Gods worshipped</h3>'
+                 + _tile_rows(god_rows, images, color=PURPLE) + "</div>")
+
     archetypes = "".join([
         _section("Archetypes", "archetypes", "Species, backgrounds and gods across the career."),
         '<div class="grid2">',
-        '<div class="card"><h3>Species played</h3>'
-        + svg_hbars(species, color=BLUE) + "</div>",
-        '<div class="card"><h3>Backgrounds</h3>'
-        + svg_hbars(bgs, color=ACCENT) + "</div>",
+        species_card,
+        bgs_card,
         '<div class="card"><h3>Species × background</h3>'
         + svg_heatmap(top_species, top_bgs, heat) + "</div>",
-        '<div class="card"><h3>Gods worshipped</h3>'
-        + svg_hbars(god_rows, color=PURPLE) + "</div>",
+        gods_card,
         "</div>",
         _fin_section(),
     ])
@@ -421,8 +565,9 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
         '<div class="kpis">' + pm_chips + "</div>",
         '<div class="grid2">',
         '<div class="card"><h3>Top recurring mistakes</h3>'
-        + svg_hbars([(label, cnt, f"{label}: {cnt} game(s)") for label, cnt, _ in rec],
-                    color=rec_color, label_w=235)
+        + _tile_rows([(label, cnt, f"{label}: {cnt} game(s)")
+                      for label, cnt, _ in rec],
+                     images, color=rec_color, label_w=235)
         + "</div>",
         offenders_block,
         "</div>",
@@ -434,11 +579,12 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
     for i, game in enumerate(reversed(g), start=1):
         mis = game.mistakes
         mis_title = " · ".join(f"{mk.label}: {mk.evidence}" for mk in mis)
+        killer_name = (game.killer or game.cause_short or "").strip()
         rows_html.append(
             "<tr>"
             f'<td data-sort="{i}" class="num">{i}</td>'
             f'<td data-sort="{game.game_date.strftime("%Y%m%d%H%M%S") if game.game_date else 0}">{fmt_date(game.game_date)}</td>'
-            f'<td>{esc(game.title or "?")}</td>'
+            f'<td><span class="titlecell">{_char_sprite(game, images, sm=True)}{esc(game.title or "?")}</span></td>'
             f'<td>{esc(game.species or "—")}</td>'
             f'<td>{esc(game.background or "—")}</td>'
             f'<td class="num" data-sort="{game.xl or 0}">{game.xl or "—"}</td>'
@@ -448,16 +594,18 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
             f'<td class="num" data-sort="{game.duration or 0}">{fmt_dur(game.duration, short=True)}</td>'
             f'<td class="num" data-sort="{game.score or 0}">{fmt_int(game.score)}</td>'
             f'<td>{esc(game.depth_label or "—")}</td>'
-            f'<td class="cause" data-sort="{esc(game.killer or game.cause_short or "")}">{esc(game.killer or game.cause_short or "—")}</td>'
-            f'<td class="num">{game.damage if game.damage is not None else "—"}</td>'
-            f'<td class="num" data-sort="{len(game.uniques_killed)}">{len(game.uniques_killed) or "—"}</td>'
+            f'<td class="cause" data-sort="{esc(killer_name)}">'
+            f'<span class="titlecell">{_tile_img(killer_name, images, "tile-sm", fallback=True)}{esc(killer_name or "—")}</span></td>'
+            f'<td class="num">{fmt_int(game.damage) if game.damage is not None else "—"}</td>'
+            f'<td class="num" data-sort="{len(game.uniques_killed)}">'
+            f'{(fmt_int(len(game.uniques_killed)) if game.uniques_killed else "—")}</td>'
             + (f'<td class="num" data-sort="{len(mis)}" title="{esc(mis_title)}" '
                f'style="color:{DEATH if any(m.severity == "high" for m in mis) else ACCENT}">'
                f'{"⚠ " + str(len(mis)) if mis else "—"}</td>')
             + "</tr>"
         )
     table = "".join([
-        _section("Every run", "runs", f"All {rs.total_games} recorded games, newest first. Click a column to sort, type to filter."),
+        _section("Every run", "runs", f"All {fmt_int(rs.total_games)} recorded games, newest first. Click a column to sort, type to filter."),
         '<div class="card">',
         '<input id="run-filter" type="search" placeholder="Filter runs… (try \'Trog\', \'Minotaur\', \'giant\')" autocomplete="off">',
         '<div class="table-wrap"><table id="runs-table">',
@@ -498,7 +646,7 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
           first_15.title if first_15 else "", BLUE)
     mcard("Longest game", fmt_dur(longest.duration, short=True) if longest else "—",
           f"{longest.title} · {fmt_date(longest.game_date)}" if longest else "", TEXT)
-    mcard("Most uniques slain", str(len(most_uniques.uniques_killed)) if most_uniques else "—",
+    mcard("Most uniques slain", fmt_int(len(most_uniques.uniques_killed)) if most_uniques else "—",
           most_uniques.title if most_uniques else "", WIN)
     mcard("Unique kills (total)", fmt_int(sum(rs.uniques.values())),
           f"{len(rs.uniques)} distinct", WIN)
@@ -517,16 +665,112 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
     if hiatus_days:
         mcard("Longest hiatus", _fmt_days(hiatus_days), hiatus_span, MUTED)
 
+    uniq_rows = [(u, c, f"{u}: slain {c} time(s)") for u, c in uniques]
+    uniques_card = ('<div class="card"><h3>Most-slain uniques</h3>'
+                    + (_tile_rows(uniq_rows, images, color=WIN)
+                       if any(images.get(u) for u, _ in uniques)
+                       else svg_hbars(uniq_rows, color=WIN))
+                    + "</div>")
+
+    # ---- Section assembly ----------------------------------------------
     milestones = "".join([
         _section("Milestones", "milestones", "Firsts and records along the way."),
-        '<div class="kpis">' + "".join(milestone_cards) + "</div>",
+        '<div class="records">' + "".join(milestone_cards) + "</div>",
+        _fin_section(),
+    ])
+
+    # Best runs = highest scores (rs.games is date-sorted, so pick explicitly).
+    best_list = sorted((x for x in g if x.score is not None),
+                       key=lambda x: x.score, reverse=True)[:8]
+    best_rows = []
+    for x in best_list:
+        best_rows.append(
+            "<tr>"
+            f'<td>{fmt_date(x.game_date)}</td>'
+            f'<td><span class="titlecell">{_char_sprite(x, images, sm=True)}'
+            f'{esc(x.title or "?")}</span></td>'
+            f'<td>{esc(x.species or "—")}</td>'
+            f'<td>{esc(x.background or "—")}</td>'
+            f'<td>{esc(x.god or "—")}</td>'
+            f'<td class="num">{x.xl or "—"}</td>'
+            f'<td class="num">{x.runes or "—"}</td>'
+            f'<td class="num" data-sort="{x.score or 0}">'
+            f'<b style="color:{WIN}">{fmt_int(x.score)}</b></td>'
+            f'<td>{esc(x.depth_label or "—")}</td>'
+            f'<td class="num">{fmt_dur(x.duration, short=True)}</td>'
+            "</tr>"
+        )
+    best_section = "".join([
+        _section("Best runs", "best", "The eight highest-scoring runs."),
+        '<div class="card"><h3>Best runs</h3>',
+        '<div class="table-wrap"><table>',
+        "<thead><tr>"
+        "<th>Date</th><th>Character</th><th>Species</th><th>Bg</th>"
+        "<th>God</th><th>XL</th><th>Runes</th><th>Score</th>"
+        "<th>Reached</th><th>Time</th>"
+        "</tr></thead><tbody>",
+        "".join(best_rows),
+        "</tbody></table></div></div>",
+        _fin_section(),
+    ])
+
+    monsters_extra = ""
+    if images or unique_deaths:
+        if ud:
+            uni_deaths_card = ('<div class="card"><h3>Deaths vs uniques</h3>'
+                               + _tile_rows(
+                                   [(k, v, f"{k}: killed you {v} time(s)")
+                                    for k, v in ud],
+                                   images, color=DEATH)
+                               + "</div>")
+        else:
+            uni_deaths_card = (
+                '<div class="card"><h3>Deaths vs uniques</h3>'
+                '<div class="note">No unique monster has ever killed you.</div>'
+                "</div>")
+        monsters_extra = "".join([
+            '<div class="grid2">', uni_deaths_card,
+            '<div class="card"><h3>Uniques vs you</h3>'
+            f'<div class="big" style="color:{DEATH}">{fmt_int(ud_total)}</div>'
+            f'<div class="note">{pct(ud_total, death_runs)} of all runs were ended '
+            f'by a named unique'
+            + (f' — deadliest: <b>{esc(deadliest[0])}</b> ({deadliest[1]})'
+               if deadliest else "") + ".</div>",
+            "</div>",
+            "</div>",
+        ])
+
+    monsters = "".join([
+        _section("Monsters", "monsters",
+                 "Monster by monster: who killed you and which uniques you slew."),
         '<div class="grid2">',
-        '<div class="card"><h3>Most-slain uniques</h3>'
-        + svg_hbars(uniques, color=WIN) + "</div>",
-        '<div class="card"><h3>Worst runs</h3>'
-        + svg_hbars([(f"{fmt_date(x.game_date)} · {x.title}", x.score or 0,
-                      f"{x.title}, XL {x.xl}, {x.killer or x.cause_short}") for x in g[:4]],
-                    color=MUTED) + "</div>",
+        killer_card,
+        uniques_card,
+        "</div>",
+        monsters_extra,
+        _fin_section(),
+    ])
+
+    branches_section = "".join([
+        _section("Branches", "branches",
+                 "How often each branch was entered, and how many runs ended there."),
+        '<div class="grid2">',
+        visit_card,
+        branch_card,
+        "</div>",
+        _fin_section(),
+    ])
+
+    death_charts = "".join([
+        _section("Deaths", "deaths",
+                 "At what XP level and what hour of day the runs ended."),
+        '<div class="grid2">',
+        '<div class="card"><h3>Deaths by XP level</h3>'
+        + svg_vbars([str(x) for x, _ in xl_hist], [v for _, v in xl_hist], color=BLUE)
+        + "</div>",
+        '<div class="card"><h3>Deaths by hour of day (UTC)</h3>'
+        + svg_vbars([str(h) for h in range(24)], hours, color=MUTED, value_labels=False)
+        + "</div>",
         "</div>",
         _fin_section(),
     ])
@@ -534,9 +778,11 @@ def render_html(rs: ReportStats, player: str, *, source_url: str = "") -> str:
     # ---- Page -----------------------------------------------------------
     nav = "".join(
         f'<a href="#{a}">{esc(t)}</a>'
-        for a, t in [("timeline", "Timeline"), ("deaths", "Deaths"),
-                     ("archetypes", "Archetypes"), ("milestones", "Milestones"),
-                     ("postmortem", "Post-mortem"), ("runs", "Every run")]
+        for a, t in [("milestones", "Milestones"), ("timeline", "Timeline"),
+                     ("archetypes", "Characters"), ("best", "Best runs"),
+                     ("monsters", "Monsters"), ("branches", "Branches"),
+                     ("deaths", "Deaths"), ("postmortem", "Post-mortem"),
+                     ("runs", "Every run")]
     )
     source = (f'<a href="{esc(source_url)}">morgue files</a>' if source_url
               else "morgue files")
@@ -571,12 +817,13 @@ a:hover {{ text-decoration:underline; }}
 .hero-sub {{ font-size:18px; color:var(--muted); margin-top:2px; }}
 .hero-meta {{ font-size:14px; color:var(--muted); margin-top:8px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }}
-.nav {{ max-width:1180px; margin:24px auto 0; display:flex; gap:22px;
+.nav {{ max-width:1180px; margin:24px auto 0; display:flex; flex-wrap:wrap; gap:14px 22px;
   font-size:14px; color:var(--muted); }}
 .nav a {{ color:var(--muted); }}
 
-main {{ max-width:1180px; margin:0 auto; padding:36px 32px 80px; }}
+main {{ max-width:1180px; margin:0 auto; padding:24px 32px 80px; }}
 section {{ margin-top:56px; scroll-margin-top:24px; }}
+main > section:first-child {{ margin-top:0; }}
 .section-head {{ margin-bottom:18px; }}
 .section-head h2 {{ font-size:26px; font-weight:700; letter-spacing:-0.3px; }}
 .section-sub {{ color:var(--muted); font-size:14px; margin-top:4px; }}
@@ -594,6 +841,10 @@ section {{ margin-top:56px; scroll-margin-top:24px; }}
 
 .grid2 {{ display:grid; grid-template-columns:1fr 1fr; gap:18px; }}
 @media (max-width:900px) {{ .grid2 {{ grid-template-columns:1fr; }} }}
+.grid2 .card {{ display:flex; flex-direction:column; }}
+.grid2 .card > .trows {{ flex:1 0 auto; justify-content:space-evenly; }}
+.records {{ display:flex; flex-wrap:wrap; gap:14px; justify-content:center; }}
+.records .kpi {{ flex:1 1 300px; }}
 .card {{ background:var(--panel); border:1px solid var(--border); border-radius:14px;
   padding:20px 22px; }}
 .card h3 {{ font-size:15px; font-weight:600; color:#e6edf3; margin-bottom:12px; }}
@@ -637,6 +888,35 @@ tbody tr.row-hidden {{ display:none; }}
 .sev-medium b {{ color:var(--accent); }}
 .sev-low b {{ color:var(--text); }}
 
+.tile {{ width:32px; height:32px; flex:0 0 auto; border-radius:6px;
+  image-rendering:pixelated; image-rendering:crisp-edges; }}
+.tile-sm {{ width:24px; height:24px; flex:0 0 auto; border-radius:4px;
+  image-rendering:pixelated; image-rendering:crisp-edges; }}
+.titlecell {{ display:inline-flex; align-items:center; gap:9px; }}
+.charstack {{ position:relative; display:inline-block; width:32px; height:32px;
+  flex:0 0 auto; }}
+.charstack img {{ position:absolute; inset:0; width:32px; height:32px;
+  image-rendering:pixelated; image-rendering:crisp-edges; }}
+.charstack.sm {{ width:24px; height:24px; }}
+.charstack.sm img {{ width:24px; height:24px; }}
+.trows {{ display:flex; flex-direction:column; }}
+.trow {{ display:flex; align-items:center; gap:10px; padding:3px 0; }}
+.tlab {{ flex:0 0 170px; width:170px; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; font-size:13px; }}
+.track {{ flex:1 1 auto; height:8px; background:var(--panel2); border-radius:99px;
+  overflow:hidden; min-width:40px; }}
+.fill {{ height:100%; border-radius:99px; }}
+.tval {{ flex:0 0 auto; min-width:44px; text-align:right; font-size:12px;
+  color:var(--muted); }}
+.big {{ font-size:42px; font-weight:800; letter-spacing:-1px; line-height:1.05; }}
+.note {{ color:var(--muted); font-size:13px; }}
+.tile-unknown {{ display:inline-flex; align-items:center; justify-content:center;
+  width:32px; height:32px; flex:0 0 auto; color:var(--muted); opacity:0.55; }}
+.tile-gap {{ width:32px; flex:0 0 auto; }}
+.tile-unknown svg {{ width:22px; height:22px; display:block; }}
+.tile-unknown.tile-sm {{ width:24px; height:24px; }}
+.tile-unknown.tile-sm svg {{ width:16px; height:16px; }}
+
 footer {{ border-top:1px solid var(--border); color:var(--muted); font-size:13px;
   padding:28px 32px 48px; text-align:center; }}
 footer a {{ color:var(--muted); }}
@@ -647,23 +927,26 @@ footer a {{ color:var(--muted); }}
   <div class="hero-top">
     <div class="hero-title">{esc(player)}</div>
     <div class="hero-sub">Dungeon Crawl Stone Soup — career morgue report</div>
-    <div class="hero-meta">{esc(span)} · {rs.total_games} games · {rs.wins} win(s) ·
+    <div class="hero-meta">{esc(span)} · {fmt_int(rs.total_games)} games · {fmt_int(rs.wins)} win(s) ·
       {fmt_int(rs.total_turns)} turns · {fmt_dur_long(rs.total_seconds)} · generated {datetime.utcnow().strftime("%b %d, %Y")}</div>
     <nav class="nav">{nav}</nav>
   </div>
 </header>
 <div class="kpis">{kpis}</div>
 <main>
-{timeline}
-{deaths}
-{archetypes}
 {milestones}
+{timeline}
+{archetypes}
+{best_section}
+{monsters}
+{branches_section}
+{death_charts}
 {postmortem}
 {table}
 </main>
 <footer>
-  Generated from {source} · parsed {len(rs.games)} of {rs.total_games} morgue files
-  {f"({len(rs.unparsed)} unparsed)" if rs.unparsed else ""} ·
+  Generated from {source} · parsed {fmt_int(len(rs.games))} of {fmt_int(rs.total_games)} morgue files
+  {f"({fmt_int(len(rs.unparsed))} unparsed)" if rs.unparsed else ""} ·
   versions: {", ".join(k for k, _ in rs.version_counts.most_common(4))}
 </footer>
 <script>

@@ -223,13 +223,22 @@ _DEATH_RE = re.compile(
     r")(?: \((\d+) damage\))?$"
 )
 _WIN_RE = re.compile(
-    r"^(Escaped with the Orb of Zot!|Got out of the dungeon alive\.|Was the champion of the Dungeon\.)"
+    r"^(Escaped with the Orb of Zot!|Was the champion of the Dungeon\.)$"
 )
+#: 0.19-era webtiles split the win banner over two lines:
+#: "Escaped with the Orb" / "... and 15 runes on Sept 27, 2016!"
+_ORB_LINE_RE = re.compile(r"^Escaped with the Orb$")
+_ORB_RUNES_RE = re.compile(r"^\.\.\. and (\d+) runes? on (.+)!$")
 _LASTED_RE = re.compile(r"The game lasted (\d+):(\d+):(\d+) \((\d+) turns\)\.")
 _WHERE_RE = re.compile(r"^\.\.\. on (.+)$")
-_LEVEL_LOC_RE = re.compile(r"^level (\d+) of (?:the )?(.+?)(?: on [A-Z][a-z]+ \d+, \d+\.)?$")
+_LEVEL_LOC_RE = re.compile(
+    r"^[Ll]evel (\d+) of (?:the )?(.+?)(?: on [A-Z][a-z]+ \d+, \d+\.)?$"
+)
 _PLAIN_DATE_RE = re.compile(r"^[A-Z][a-z]+ \d+, \d+\.$")
-_FINAL_WHERE_RE = re.compile(r"^You were (?:on|in) (?:level (\d+) of )?(?:the )?(.+?)\.$")
+_FINAL_WHERE_RE = re.compile(
+    r"^You were (?:on|in) (?:[Ll]evel (\d+) of )?(?:the )?(.+?)"
+    r"(?: on [A-Z][a-z]+ \d+, \d+)?\.$"
+)
 _VISITED_RE = re.compile(r"^You visited (\d+) branch(?:es)? of the dungeon, and saw (\d+) of its levels\.$")
 _ALSO_VISITED_RE = re.compile(r"^You also visited: (.+)$")
 _NECRO_RE = re.compile(r"^You visited (?:the )?(.+?) \d+ times?\.$")
@@ -243,6 +252,8 @@ _VERSION_RE = re.compile(r"^Dungeon Crawl Stone Soup version (\S+)")
 _SEED_RE = re.compile(r"^Game seed: (\d+)$")
 _NOTE_RE = re.compile(r"^(\d+) \|\s*(\S+)\s*\| (.*)$")
 _KILL_NOTE_RE = re.compile(r"^Killed (?!by\b)([A-Z]\w.*)$")
+#: "Killed Dega's ghost" — player ghosts are not uniques.
+_GHOST_KILL_RE = re.compile(r"'s ghost\b")
 _ENTERED_RE = re.compile(r"^Entered (?:Level (\d+) of )?(?:the )?(.+)$")
 _INV_CAT_RE = re.compile(
     r"^(Hand Weapons|Weapons|Missiles|Armour|Jewellery|Wands|Scrolls|Potions"
@@ -305,8 +316,11 @@ _BRANCH_VISITED_RE = re.compile(r"^(\w[\w ]*?)\s+\(visited\)")
 #: All species names that have appeared in DCSS 0.18–0.35, longest first.
 _SPECIES = (
     "Vine Stalker", "Mountain Dwarf", "Sludge Elf", "Deep Dwarf",
+    "Black Draconian", "Green Draconian", "Grey Draconian",
+    "Pale Draconian", "Purple Draconian", "Red Draconian",
+    "White Draconian", "Yellow Draconian",
     "Deep Elf", "High Elf", "Hill Orc", "Demigod", "Halfling",
-    "Spriggan", "Minotaur", "Centaur", "Merfolk", "Octopode",
+    "Spriggan", "Gale Centaur", "Minotaur", "Centaur", "Merfolk", "Octopode",
     "Gargoyle", "Formicid", "Barachi", "Djinni", "Draconian",
     "Armataur", "Vampire", "Kobold", "Tengu", "Naga", "Troll",
     "Ogre", "Ghoul", "Mummy", "Felid", "Gnoll", "Human",
@@ -320,6 +334,18 @@ _STATS_KEYS = {
 # --------------------------------------------------------------------------
 # Parsing
 # --------------------------------------------------------------------------
+
+_TITLE_SMALL = {"a", "an", "and", "at", "for", "in", "of", "on", "the", "to"}
+
+
+def _title_case(s: str) -> str:
+    """'realm of zot' -> 'Realm of Zot'; 'MERFOLKIAN porcupine' -> 'Merfolkian Porcupine'."""
+    words = s.split()
+    return " ".join(
+        w.capitalize() if i == 0 or w.lower() not in _TITLE_SMALL else w.lower()
+        for i, w in enumerate(words)
+    ) or s
+
 
 def parse_morgue(text: str, source: str) -> Game:
     g = Game(source=source)
@@ -342,11 +368,12 @@ def parse_morgue(text: str, source: str) -> Game:
     if title_m:
         g.score = int(title_m.group(1))
         g.name = title_m.group(2)
-        g.title = title_m.group(3)
+        g.title = _title_case(title_m.group(3).strip())
         g.xl = int(title_m.group(4))
         g.hp_at_end = title_m.group(5).strip()
 
     header_end = min((title_idx + 1) + 14, len(lines))
+    orb_pending = False
     for j in range((title_idx + 1) if title_idx is not None else 0, header_end):
         ln = lines[j].strip()
         if not ln:
@@ -354,6 +381,24 @@ def parse_morgue(text: str, source: str) -> Game:
         if ln.split(" ", 1)[0] in _STATS_KEYS:
             header_end = j
             break
+        if orb_pending:
+            orb_pending = False
+            m = _ORB_RUNES_RE.match(ln)
+            if m:
+                g.outcome = "win"
+                g.cause = "Escaped with the Orb of Zot!"
+                g.cause_short = "escaped with the Orb of Zot"
+                g.killer = "the Orb of Zot"
+                d = _parse_date(m.group(2))
+                if d:
+                    g.death_date = d
+                if g.game_date is None:
+                    g.game_date = d
+            continue
+        m = _ORB_LINE_RE.match(ln)
+        if m:
+            orb_pending = True
+            continue
         m = _BEGAN_RE.match(ln)
         if m:
             g.species, g.background = _split_species_background(m.group(1))
@@ -500,7 +545,7 @@ def parse_morgue(text: str, source: str) -> Game:
                 note = Note(int(m.group(1)), m.group(2), m.group(3))
                 g.notes.append(note)
                 km = _KILL_NOTE_RE.match(note.text)
-                if km:
+                if km and not _GHOST_KILL_RE.search(note.text):
                     g.uniques_killed.append(km.group(1).strip())
                 em = _ENTERED_RE.match(note.text)
                 if em:
