@@ -14,3 +14,7 @@ __pycache__/
 build/
 dist/
 .venv/
+
+# Regenerable report HTML (hosted examples live in docs/examples/)
+data/reports/*.html
+!data/reports/Fuzzwah.html
