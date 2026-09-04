@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import statistics
 from collections import Counter
 from datetime import datetime
@@ -104,14 +105,14 @@ SKULL_SVG = (
 
 def _tile_img(name: str, images: dict[str, str], cls: str = "tile", *,
               fallback: bool = False) -> str:
-    """Inline <img> for `name` when art is available, else '' (layout holds).
+    """Token <img> for `name` when art exists; '' otherwise (layout holds).
 
-    With `fallback`, artless names get the no-art glyph instead of nothing —
-    used only for death causes, where an empty tile reads as a bug.
+    Images are embedded once in a JSON dictionary and referenced by token —
+    the base64 payload must not repeat once per table row.  With `fallback`,
+    artless death causes get the no-art glyph instead of nothing.
     """
-    uri = images.get(name)
-    if uri:
-        return f'<img class="{cls}" src="{uri}" alt="" loading="lazy">'
+    if name in images:
+        return f'<img class="{cls}" data-img="{esc(name)}" alt="">'
     if fallback:
         small = " tile-sm" if cls == "tile-sm" else ""
         return (f'<span class="tile-unknown{small}" '
@@ -127,11 +128,11 @@ def _char_sprite(game, images: dict[str, str], *, sm: bool = False) -> str:
     """
     from . import tiles
     rels = tiles.gear_rels(game)
-    uris = [images.get(game.species or "")] + \
-        [images.get("part:" + r) for r in rels]
-    imgs = "".join(f'<img src="{u}" alt="">' for u in uris if u)
-    if not imgs:
+    keys = [game.species or ""] + ["part:" + r for r in rels]
+    keys = [k for k in keys if k in images]
+    if not keys:
         return ""
+    imgs = "".join(f'<img data-img="{esc(k)}" alt="">' for k in keys)
     return f'<span class="{"charstack sm" if sm else "charstack"}">{imgs}</span>'
 
 
@@ -949,6 +950,15 @@ footer a {{ color:var(--muted); }}
   {f"({fmt_int(len(rs.unparsed))} unparsed)" if rs.unparsed else ""} ·
   versions: {", ".join(k for k, _ in rs.version_counts.most_common(4))}
 </footer>
+<script>
+(function () {{
+  const IMGS = {json.dumps(images, ensure_ascii=False)};
+  document.querySelectorAll('img[data-img]').forEach(function (img) {{
+    const k = img.getAttribute('data-img');
+    if (Object.prototype.hasOwnProperty.call(IMGS, k)) img.src = IMGS[k];
+  }});
+}})();
+</script>
 <script>
 (function () {{
   const table = document.getElementById('runs-table');
