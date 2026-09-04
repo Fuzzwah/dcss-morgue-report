@@ -8,7 +8,7 @@ a sortable/filterable table of every run.
 Built with the Python standard library only. No dependencies, no build step, no
 internet needed to view the report (charts are inline SVG, tiles are embedded).
 
-![report preview](data/reports/Fuzzwah.html)
+![report preview](https://fuzzwah.github.io/dcss-morgue-report/)
 
 ## Features
 
@@ -129,6 +129,10 @@ data/
 ```
 
 ## Example
+
+`docs/index.html` is the same report, hosted on GitHub Pages at
+https://fuzzwah.github.io/dcss-morgue-report/ (keep the copy in sync with
+`cp data/reports/Fuzzwah.html docs/index.html` after regenerating).
 
 `data/reports/Fuzzwah.html` is a generated report for the author's own career:
 104 games (2016–2026), 0 wins, best score 296,714 (XL 20), 96 of 104 runs as a Trog
