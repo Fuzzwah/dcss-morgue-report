@@ -594,6 +594,12 @@ def parse_morgue(text: str, source: str) -> Game:
                 g.death_level = int(m.group(1))
             continue
 
+    # Some dev-fork morgues (e.g. 0.19 GnollCrawl) print a bogus "level 1 /
+    # XL: 1" on the character sheet of 15-rune wins.  A run that collected
+    # runes cannot be below XL ~15, so treat such levels as unknown.
+    if g.runes >= 3 and (g.xl or 0) < 12:
+        g.xl = None
+
     return g
 
 def _split_species_background(began: str) -> tuple[str, str]:
