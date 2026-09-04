@@ -8,7 +8,7 @@ a sortable/filterable table of every run.
 Built with the Python standard library only. No dependencies, no build step, no
 internet needed to view the report (charts are inline SVG, tiles are embedded).
 
-![report preview](https://fuzzwah.github.io/dcss-morgue-report/)
+![report preview](https://fuzzwah.github.io/dcss-morgue-report/examples/Fuzzwah.html)
 
 ## Features
 
@@ -113,6 +113,10 @@ python -m dcssreport all    <player> [options for both]
 ## Layout
 
 ```
+build_docs.py   copies example reports into docs/ and rebuilds the Pages overview
+docs/
+  index.html    project overview (GitHub Pages root)
+  examples/     example career reports (<player>.html)
 dcssreport/
   __init__.py     version
   __main__.py     CLI
@@ -128,14 +132,21 @@ data/
   reports/        <player>.html + <player>.json (example report committed)
 ```
 
-## Example
+## Examples
 
-`docs/index.html` is the same report, hosted on GitHub Pages at
-https://fuzzwah.github.io/dcss-morgue-report/ (keep the copy in sync with
-`cp data/reports/Fuzzwah.html docs/index.html` after regenerating).
+GitHub Pages hosts the project overview plus a gallery of example careers:
+
+- **Overview** — https://fuzzwah.github.io/dcss-morgue-report/
+- Fuzzwah (the author's decade of Minotaur/Trog runs), PurpleRed (1,188 games,
+  57 wins, nine 15-rune victories) and Wizard1ke (893 games, 166 wins, 66 of
+  them 15-rune; #1 on the dcss-stats highscores) under `/examples/`.
+
+To add or refresh an example: regenerate the report (`python -m dcssreport all
+<player>`), then run `python3 build_docs.py` — it copies the HTML into
+`docs/examples/` and rewrites the overview gallery from the JSON stats.
 
 `data/reports/Fuzzwah.html` is a generated report for the author's own career:
 104 games (2016–2026), 0 wins, best score 296,714 (XL 20), 96 of 104 runs as a Trog
 worshipper, 805,474 turns across 2 days and 5 hours of play. Named uniques ended 9 of
 those runs (Terence and Rupert twice each) and the morgues record 55 distinct uniques
-slain. Regenerate it any time with `python -m dcssreport all Fuzzwah`.
+slain.
